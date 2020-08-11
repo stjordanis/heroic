@@ -69,6 +69,15 @@ public interface RowFilter {
     }
 
     /**
+     * Build a filter that only matches the latest cell in each column.
+     *
+     * @return A filter that only matches the latest cell in each column.
+     */
+    static RowFilter limitCellsNumber(int limit) {
+        return new LimitCellsNumber(limit);
+    }
+
+    /**
      * Apply all the given row filters.
      *
      * @param chain Filter to apply.
@@ -241,6 +250,31 @@ public interface RowFilter {
             return com.google.bigtable.v2.RowFilter
                 .newBuilder()
                 .setCellsPerColumnLimitFilter(1)
+                .build();
+        }
+    }
+
+    class LimitCellsNumber implements RowFilter {
+        int limit;
+        LimitCellsNumber(int limit) {
+            this.limit = limit;
+        }
+
+        @Override
+        public boolean matchesColumn(final ByteString columnQualifier) {
+            return true;
+        }
+
+        @Override
+        public boolean matchesColumnFamily(final String familyName) {
+            return true;
+        }
+
+        @Override
+        public com.google.bigtable.v2.RowFilter toPb() {
+            return com.google.bigtable.v2.RowFilter
+                .newBuilder()
+                .setCellsPerRowLimitFilter(limit)
                 .build();
         }
     }

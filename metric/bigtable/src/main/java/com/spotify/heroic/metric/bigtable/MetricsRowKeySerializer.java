@@ -22,6 +22,7 @@
 package com.spotify.heroic.metric.bigtable;
 
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.io.BaseEncoding;
 import com.google.protobuf.ByteString;
 import com.spotify.heroic.common.Series;
 import eu.toolchain.serializer.AutoSerialize;

@@ -141,6 +141,8 @@ public class HeroicCore implements HeroicConfiguration {
         (Thread t, Throwable e) -> {
             //noinspection finally
             try {
+                System.out.print("The Heroic is dying now!\n");
+                System.out.flush();
                 System.err.println(
                     String.format("Uncaught exception caught in thread %s, exiting...", t));
                 e.printStackTrace(System.err);
@@ -870,6 +872,8 @@ public class HeroicCore implements HeroicConfiguration {
                 throw new IllegalArgumentException(
                     "Configuration is not readable: " + configPath.toAbsolutePath());
             }
+
+            log.info("Config: {}", configPath.toAbsolutePath());
 
             this.configPath = of(configPath);
             return this;

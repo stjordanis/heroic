@@ -37,6 +37,7 @@ import eu.toolchain.async.AsyncFramework;
 import eu.toolchain.async.AsyncFuture;
 import eu.toolchain.async.ResolvableFuture;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 
 public class BigtableDataClientImpl implements BigtableDataClient {
@@ -154,11 +155,100 @@ public class BigtableDataClientImpl implements BigtableDataClient {
         return new Row(row.getKey(), families.build());
     }
 
+    @Override
+    public AsyncObservable<FlatRow> readFlatRowObserved(
+        final String tableName, final ReadRowsRequest request
+    ) {
+        return observer -> {
+            final ResultScanner<FlatRow> s =
+                session.getDataClient().readFlatRows(request.toPb(Table.toURI(clusterUri, tableName)));
+
+            final ResultScanner<FlatRow> scanner = new ResultScanner<FlatRow>() {
+                @Override
+                public void close() throws IOException {
+                    s.close();
+                }
+
+                @Override
+                public FlatRow next() throws IOException {
+                    final FlatRow n = s.next();
+
+                    return n;
+                }
+
+                @Override
+                public FlatRow[] next(int count) throws IOException {
+                    final FlatRow[] rows =
+                        s.next(count);
+
+                    final FlatRow[] results = new FlatRow[rows.length];
+
+                    for (int i = 0; i < rows.length; i++) {
+                        results[i++] = rows[i];
+                    }
+
+                    return results;
+                }
+
+                @Override
+                public int available() {
+                    return s.available();
+                }
+            };
+
+            scanAsync(scanner, observer);
+        };
+    }
+
+    public AsyncObservable<List<FlatRow>> readFlatRowsObserved(
+        final String tableName, final ReadRowsRequest request
+    ) {
+        return observer -> {
+            final ResultScanner<FlatRow> s =
+                session.getDataClient().readFlatRows(request.toPb(Table.toURI(clusterUri, tableName)));
+
+            final ResultScanner<FlatRow> scanner = new ResultScanner<FlatRow>() {
+                @Override
+                public void close() throws IOException {
+                    s.close();
+                }
+
+                @Override
+                public FlatRow next() throws IOException {
+                    final FlatRow n = s.next();
+
+                    return n;
+                }
+
+                @Override
+                public FlatRow[] next(int count) throws IOException {
+                    final FlatRow[] rows =
+                        s.next(count);
+
+                    final FlatRow[] results = new FlatRow[rows.length];
+
+                    for (int i = 0; i < rows.length; i++) {
+                        results[i++] = rows[i];
+                    }
+
+                    return results;
+                }
+
+                @Override
+                public int available() {
+                    return s.available();
+                }
+            };
+
+            scanNAsync(scanner, observer);
+        };
+    }
+
     <T> void scanAsync(ResultScanner<T> scanner, AsyncObserver<T> observer) {
         while (true) {
             final T n;
 
-                /* this will unfortunately block once in a while */
+            /* this will unfortunately block once in a while */
             try {
                 n = scanner.next();
             } catch (final Exception e) {
@@ -194,6 +284,48 @@ public class BigtableDataClientImpl implements BigtableDataClient {
                 .onCancelled(observer::cancel);
         }
     }
+
+    <T> void scanNAsync(ResultScanner<T> scanner, AsyncObserver<List<T>> observer) {
+        while (true) {
+            final T[] n;
+
+            /* this will unfortunately block once in a while */
+            try {
+                n = scanner.next(50);
+            } catch (final Exception e) {
+                observer.fail(e);
+                return;
+            }
+
+            if (n == null) {
+                observer.end();
+                return;
+            }
+
+            final AsyncFuture<Void> f = observer.observe(Arrays.asList(n.clone()));
+
+            // if already resolved, avoid adding more stack frames.
+            if (f.isDone()) {
+                if (f.isFailed()) {
+                    observer.fail(f.cause());
+                    break;
+                }
+
+                if (f.isCancelled()) {
+                    observer.cancel();
+                    break;
+                }
+
+                continue;
+            }
+
+            f
+                .onResolved(ign -> scanNAsync(scanner, observer))
+                .onFailed(observer::fail)
+                .onCancelled(observer::cancel);
+        }
+    }
+
 
     private <T> AsyncFuture<T> convert(final ListenableFuture<T> request) {
         final ResolvableFuture<T> future = async.future();

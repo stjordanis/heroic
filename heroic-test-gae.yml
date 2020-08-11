@@ -1,0 +1,62 @@
+port: 8080
+cluster:
+  useLocal: true
+  protocols:
+    - type: grpc
+metadata:
+  backends:
+  - backendType: kv
+    configure: true
+    connection:
+      client:
+        clusterName: heroic-metadata-gae2
+        seeds:
+        - gae2-heroicmetadataes-master-qfl8.gae2.spotify.net
+        - gae2-heroicmetadataes-master-jg38.gae2.spotify.net
+        - gae2-heroicmetadataes-master-4xsf.gae2.spotify.net
+        sniff: true
+        type: transport
+      index:
+        pattern: heroic-metadata-gae2-%s
+        type: rotating
+    distributedCacheSrvRecord: _spotify-heroicconsumercache2-metadata._tcp.services.gae2.spotify.net
+    rateLimitSlowStartSeconds: 120
+    type: elasticsearch
+    writeCacheConcurrency: 4
+    writeCacheDurationMinutes: 438
+    writesPerSecond: 400
+metrics:
+  aggregationLimit: 4000000
+  backends:
+  - credentials:
+      type: default
+    instance: metrics-gae
+    project: xpn-heroic-1
+    type: bigtable
+  dataLimit: 80000000
+  failOnLimits: 'true'
+  groupLimit: 4000
+  seriesLimit: 80000
+analytics:
+  credentials:
+    type: default
+  instance: analytics-gae
+  project: xpn-heroic-1
+  type: bigtable
+ingestion:
+  filter: 'true'
+  updateMetadata: false
+  updateMetrics: false
+  updateSuggestions: false
+shellServer:
+  port: 9091
+statistics:
+  type: semantic
+features:
+- com.spotify.heroic.sliced_data_fetch
+tracing:
+  lightstep:
+    collectorHost: localhost
+    collectorPort: 8360
+    accessToken: developer
+  probability: 1.0

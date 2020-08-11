@@ -48,6 +48,24 @@ public interface BigtableDataClient {
      */
     AsyncObservable<Row> readRowsObserved(String tableName, ReadRowsRequest request);
 
+    /**
+     * Read the given set of rows in an observable way.
+     *
+     * @param tableName The table to read rows from.
+     * @param request Request to use when reading rows.
+     * @return An observable that can be observed to read one row at a time.
+     */
+    AsyncObservable<FlatRow> readFlatRowObserved(String tableName, ReadRowsRequest request);
+
+    /**
+     * Read the given set of rows in an observable way.
+     *
+     * @param tableName The table to read rows from.
+     * @param request Request to use when reading rows.
+     * @return An observable that can be observed to read one row at a time.
+     */
+    AsyncObservable<List<FlatRow>> readFlatRowsObserved(String tableName, ReadRowsRequest request);
+
     AsyncFuture<Row> readModifyWriteRow(
         String tableName, ByteString rowKey, ReadModifyWriteRules rules
     );

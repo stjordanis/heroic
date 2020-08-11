@@ -32,6 +32,7 @@ import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.protobuf.ByteString;
+import com.spotify.heroic.async.AsyncObserver;
 import com.spotify.heroic.common.DateRange;
 import com.spotify.heroic.common.Groups;
 import com.spotify.heroic.common.RequestTimer;
@@ -65,6 +66,7 @@ import com.spotify.heroic.tracing.EndSpanFutureReporter;
 import eu.toolchain.async.AsyncFramework;
 import eu.toolchain.async.AsyncFuture;
 import eu.toolchain.async.Managed;
+import eu.toolchain.async.ResolvableFuture;
 import eu.toolchain.async.RetryPolicy;
 import eu.toolchain.async.RetryResult;
 import eu.toolchain.serializer.Serializer;
@@ -275,7 +277,7 @@ public class BigtableBackend extends AbstractMetricBackend implements LifeCycles
 
             switch (type) {
                 case POINT:
-                    return fetchBatch(
+                    return fetchBatchV2(
                         watcher, type, pointsRanges(request), c, consumer, parentSpan);
                 default:
                     return async.resolved(new FetchData.Result(QueryTrace.of(FETCH),
@@ -441,6 +443,7 @@ public class BigtableBackend extends AbstractMetricBackend implements LifeCycles
         final List<AsyncFuture<FetchData.Result>> fetches = new ArrayList<>(prepared.size());
 
         for (final PreparedQuery p : prepared) {
+            log.info("PreparedQuery: " + p.rowKeyStart.toStringUtf8() + " of " + prepared.size());
             Span readRowsSpan = tracer.spanBuilderWithExplicitParent(
                 "bigtable.readRows", fetchBatchSpan).startSpan();
             readRowsSpan.putAttribute("rowKeyBaseTimestamp", longAttributeValue(p.base));
@@ -466,7 +469,8 @@ public class BigtableBackend extends AbstractMetricBackend implements LifeCycles
                                                 .startQualifierOpen(p.startQualifierOpen)
                                                 .endQualifierClosed(p.endQualifierClosed)
                                                 .build(),
-                                            RowFilter.onlyLatestCell())))
+                                            RowFilter.onlyLatestCell(),
+                                            RowFilter.limitCellsNumber(1_000_000))))
                                 .build())
                         .onDone(new EndSpanFutureReporter(readRowsSpan));
             }
@@ -508,6 +512,100 @@ public class BigtableBackend extends AbstractMetricBackend implements LifeCycles
                 return result;
             });
     }
+
+    private AsyncFuture<FetchData.Result> fetchBatchV2(
+        final FetchQuotaWatcher watcher,
+        final MetricType type,
+        final List<PreparedQuery> prepared,
+        final BigtableConnection c,
+        final Consumer<MetricReadResult> metricsConsumer,
+        final Span parentSpan
+    ) {
+        final BigtableDataClient client = c.getDataClient();
+
+        final Span fetchBatchSpan =
+            tracer.spanBuilderWithExplicitParent("bigtable.fetchBatch", parentSpan).startSpan();
+        fetchBatchSpan.putAttribute("preparedQuerySize", longAttributeValue(prepared.size()));
+
+        final List<AsyncFuture<FetchData.Result>> fetches = new ArrayList<>(prepared.size());
+
+        for (final PreparedQuery p : prepared) {
+            log.info("PreparedQuery: " + p.rowKeyStart.toStringUtf8() + " of " + prepared.size());
+            Span readRowsSpan = tracer.spanBuilderWithExplicitParent(
+                "bigtable.readRows", fetchBatchSpan).startSpan();
+            readRowsSpan.putAttribute("rowKeyBaseTimestamp", longAttributeValue(p.base));
+
+            final Function<FlatRow.Cell, Metric> transform =
+                cell -> p.deserialize(cell.getQualifier(), cell.getValue());
+
+            QueryTrace.NamedWatch fs = QueryTrace.watch(FETCH_SEGMENT);
+
+            final ResolvableFuture<Void> future = async.future();
+            final List<AsyncFuture<FlatRow>> readFlatRows = new ArrayList<>();
+            try (Scope ignored = tracer.withSpan(fetchBatchSpan)) {
+                client
+                    .readFlatRowsObserved(
+                        table,
+                        ReadRowsRequest.builder()
+                            .range(new RowRange(
+                                Optional.of(p.rowKeyStart), Optional.of(p.rowKeyEnd)))
+                            .filter(
+                                RowFilter.chain(
+                                    Arrays.asList(
+                                        RowFilter.newColumnRangeBuilder(p.columnFamily)
+                                            .startQualifierOpen(p.startQualifierOpen)
+                                            .endQualifierClosed(p.endQualifierClosed)
+                                            .build(),
+                                        RowFilter.onlyLatestCell())))
+                            .build())
+                    .observe(AsyncObserver.bind(future, flatRows -> {
+                        flatRows.forEach(flatRow -> {
+                            readFlatRows.add(async.resolved(flatRow));
+                        });
+                        return async.resolved();
+                    }));
+
+                    //TODO
+//                        .onDone(new EndSpanFutureReporter(readRowsSpan));
+                new EndSpanFutureReporter(readRowsSpan);
+            }
+
+            final AtomicBoolean foundResourceIdentifier = new AtomicBoolean(false);
+            readRowsSpan.putAttribute("rowsReturned", longAttributeValue(readFlatRows.size()));
+            readFlatRows.forEach( flatRow ->
+                fetches.add(flatRow.directTransform( row -> {
+                    SortedMap<String, String> resource = parseResourceFromRowKey(row.getRowKey());
+
+                    if (!foundResourceIdentifier.get() && resource.size() > 0) {
+                        foundResourceIdentifier.set(true);
+                    }
+
+                    watcher.readData(row.getCells().size());
+
+                    final List<Metric> metrics = Lists.transform(row.getCells(), transform);
+                    final MetricCollection mc = MetricCollection.build(type, metrics);
+                    final MetricReadResult readResult = new MetricReadResult(mc, resource);
+
+                    metricsConsumer.accept(readResult);
+
+                readRowsSpan.putAttribute(
+                    "containsResourceIdentifier", booleanAttributeValue(
+                        foundResourceIdentifier.get()));
+
+                return new FetchData.Result(fs.end());
+            })));
+        }
+
+        return async.collect(fetches, FetchData.collectResult(FETCH))
+            .directTransform(result -> {
+                fetchBatchSpan.end();
+                // this is not actually how many rows were touched. The number of resource
+                // identifiers are unknown until query time.
+                watcher.accessedRows(prepared.size());
+                return result;
+            });
+    }
+
 
     private SortedMap<String, String> parseResourceFromRowKey(final ByteString rowKey)
         throws IOException {
